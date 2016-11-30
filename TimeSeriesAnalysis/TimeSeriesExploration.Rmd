@@ -1,0 +1,231 @@
+---
+title: "Explore Time Series Analysis"
+output: html_notebook
+---
+
+This is an exploration of time series analysis that includes moving average, holt-winters smoothing, and ARIMA models.
+
+loading libraries
+```{r}
+
+library(data.table)
+library(dplyr)
+library(TTR)
+library(forecast)
+```
+
+Lets start with water usage data over time 
+Read data from a csv and convert it to a time series. This is a randomly generated data for experimenting purposes. 
+```{r}
+smc_test <- fread('smc_test.csv', stringsAsFactors = FALSE)
+
+smc_test <- arrange(smc_test, usage_date,cust_loc_id)
+
+smc <- smc_test %>%  group_by(usage_date) %>% summarise(usage_ccf = sum(usage_ccf)/1000)
+
+smc_ts_matrix <- as.matrix(smc[2])
+
+smc_timeseries <- ts(smc_ts_matrix, frequency=12, start=c(2014,1))
+```
+
+Plotting the timeseries
+```{r}
+plot.ts(smc_timeseries)
+```
+
+Moving average of second order
+```{r}
+smoothedsmc <- SMA(smc_timeseries,n=2)
+plot.ts(smoothedsmc)
+```
+We can observe that there is a severe downfall at mid 2015
+
+
+Here we can observe trend and seasonal components separately
+```{r}
+smccomponents <- decompose(smc_timeseries)
+plot(smccomponents)
+```
+
+Detach the seasonal component and see the plot
+```{r}
+smcseasonallyadjusted <- smc_timeseries - smccomponents$seasonal
+plot(smcseasonallyadjusted)
+```
+
+Simple exponential smoothing for default ts assuming no trend. In plot, Red line is the forecast, Black line is the original data
+```{r}
+smc_notrend <- HoltWinters(smc_timeseries, beta=FALSE, gamma=FALSE)
+smc_notrend
+smc_notrend$SSE
+smc_notrend$fitted
+plot(smc_notrend)
+```
+
+Simple exponential smoothing for seasonally adjusted ts assuming no trend - plotting seasonally adjusted data forecast gives us slightly better sum of squared errors
+```{r}
+smc_adjusted <- HoltWinters(smcseasonallyadjusted, beta=FALSE, gamma=FALSE)
+smc_adjusted
+smc_adjusted$SSE
+smc_adjusted$fitted
+plot(smc_adjusted)
+```
+
+Predicting for next 5 months
+```{r}
+smc_adjusted_forecasts <- forecast.HoltWinters(smc_adjusted, h=5)
+smc_adjusted_forecasts
+
+plot.forecast(smc_adjusted_forecasts)
+```
+
+Lets see residuals(errors)
+```{r}
+plot(smc_adjusted_forecasts$residuals)
+```
+
+With acf and Ljung-Box tests, we can see that there are no non-zero auto correlations as the p value is very high
+```{r}
+acf(smc_adjusted_forecasts$residuals, lag.max = 20,na.action = na.pass)
+Box.test(smc_adjusted_forecasts$residuals, lag=20, type="Ljung-Box")
+
+```
+
+
+Function to check whether forecast errors are normally distributed with mean zero
+```{r}
+plotForecastErrors <- function(forecasterrors)
+{
+  # make a histogram of the forecast errors:
+  mybinsize <- IQR(forecasterrors,na.rm=TRUE)/4
+  mysd   <- sd(forecasterrors,na.rm=TRUE)
+  mymin  <- min(forecasterrors,na.rm=TRUE) - mysd*5
+  mymax  <- max(forecasterrors,na.rm=TRUE) + mysd*3
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  mynorm <- rnorm(10000, mean=0, sd=mysd)
+  mymin2 <- min(mynorm)
+  mymax2 <- max(mynorm)
+  if (mymin2 < mymin) { mymin <- mymin2 }
+  if (mymax2 > mymax) { mymax <- mymax2 }
+  # make a red histogram of the forecast errors, with the normally distributed data overlaid:
+  mybins <- seq(mymin, mymax, mybinsize)
+  hist(forecasterrors, col="red", freq=FALSE, breaks=mybins)
+  # freq=FALSE ensures the area under the histogram = 1
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  myhist <- hist(mynorm, plot=FALSE, breaks=mybins)
+  # plot the normal curve as a blue line on top of the histogram of forecast errors:
+  points(myhist$mids, myhist$density, type="l", col="blue", lwd=2)
+}
+plotForecastErrors(smc_adjusted_forecasts$residuals)
+```
+
+The plot shows that the distribution of forecast errors is roughly centred on zero, and is more or less normally
+distributed.
+The Ljung-Box test showed that there is little evidence of non-zero autocorrelations in the in-sample forecast errors,
+and the distribution of forecast errors seems to be normally distributed with mean zero. This suggests that the
+simple exponential smoothing method provides an adequate predictive model for water usage. Furthermore, the assumptions that the 80% and 95% predictions intervals were based upon (that there are no autocorrelations in the forecast errors, and the forecast errors are normally distributed with mean zero and constant variance) are probably valid.
+
+
+Holts exponential model(assuming there is a trend and no seasonality)
+```{r}
+smc_trend <- HoltWinters(smc_timeseries, gamma=FALSE)
+smc_trend
+smc_trend$SSE
+
+plot(smc_trend)
+```
+
+
+Lets predict for the next 5 months
+```{r}
+smc_trend <- forecast.HoltWinters(smc_trend, h=5)
+plot.forecast(smc_trend)
+```
+
+Lets check the residuals
+```{r}
+acf(smc_trend$residuals, lag.max = 20,na.action = na.pass)
+Box.test(smc_trend$residuals, lag=20, type="Ljung-Box")
+```
+
+p-value is very low - indicates evidence of non-zero auto correlations. Model could be improved.
+
+
+Lets check for constant variance and normal distribution with mean zero in residuals
+```{r}
+plot.ts(smc_trend$residuals)            # make a time plot
+plotForecastErrors(smc_trend$residuals) # make a histogram
+mean(smc_trend$residuals,na.rm=TRUE)
+```
+
+If we observe carefully, mean is to the right of zero. This model shoud not be considered.
+
+Holt-Winter's Exponential smoothing (assuming there is trend and seasonality)
+```{r}
+smc_trend_seasonality <- HoltWinters(smc_timeseries)
+
+smc_trend_seasonality$SSE
+
+plot(smc_trend_seasonality)
+```
+
+
+Predicting for the next 5 months
+```{r}
+smc_trend_seasonality <- forecast.HoltWinters(smc_trend_seasonality, h=5)
+smc_trend_seasonality
+plot(smc_trend_seasonality)
+```
+
+Checking Residuals
+```{r}
+acf(smc_trend_seasonality$residuals, lag.max=20,na.action = na.pass)
+Box.test(smc_trend_seasonality$residuals, lag=20, type="Ljung-Box")
+
+plot.ts(smc_trend_seasonality$residuals)            # make a time plot
+plotForecastErrors(smc_trend_seasonality$residuals) # make a histogram
+
+```
+p-value is high and residuals are normally distributed with mean 0 - residuals are independent
+
+
+#ARIMA Model
+ARIMA allows for non-zero auto correlations to exist
+```{r}
+acf(smc_timeseries, lag.max=20)             # plot a correlogram
+acf(smc_timeseries, lag.max=20, plot=FALSE) # get the autocorrelation values
+
+pacf(smc_timeseries, lag.max=20)
+pacf(smc_timeseries, lag.max=20, plot=FALSE) #get partial autocorrelation values
+```
+
+We can select a model(p,d,q) based on the above information or go with a nice function auto.arima() to select optimal
+model
+
+Passing original timeseries without any adjustments or differences. Auto Arima takes care of differences and selects
+optimal model
+```{r}
+smctrain <- auto.arima(smc_ts_matrix, trace = TRUE)
+smctrain
+```
+
+Prediction
+```{r}
+smcprediction <- forecast.Arima(smctrain, h=5)
+smcprediction
+plot.forecast(smcprediction)
+```
+
+Checking residuals
+```{r}
+acf(smcprediction$residuals, lag.max=20)
+Box.test(smcprediction$residuals, lag=20, type="Ljung-Box")
+
+plot.ts(smcprediction$residuals)            # make time plot of forecast errors
+plotForecastErrors(smcprediction$residuals) # make a histogram
+mean(smcprediction$residuals)
+```
+
+The successive forecast errors do not seem to be correlated, but the forecast errors do not seem to be normally distributed with mean zero and constant variance, the ARIMA(1,1,0) does not seem to be an adequate predictive model for the water usage and could be improved.
+This time series is too random to predict and might need fourier series transformation.
+
